@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use runkit_core::{DesiredState, ServiceInfo, ServiceLogEntry, ServiceManager, ServiceRuntimeState};
+use runkit_core::{
+    DesiredState, ServiceInfo, ServiceLogEntry, ServiceManager, ServiceRuntimeState,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::os::unix::fs as unix_fs;
@@ -259,7 +261,9 @@ impl HelperContext {
             source: err,
         })?;
 
-        Ok(CommandOutcome::message(format!("Enabled service {service}")))
+        Ok(CommandOutcome::message(format!(
+            "Enabled service {service}"
+        )))
     }
 
     fn disable(&self, service: &str) -> Result<CommandOutcome, HelperError> {
@@ -274,7 +278,9 @@ impl HelperContext {
             source: err,
         })?;
 
-        Ok(CommandOutcome::message(format!("Disabled service {service}")))
+        Ok(CommandOutcome::message(format!(
+            "Disabled service {service}"
+        )))
     }
 
     fn list(&self) -> Result<CommandOutcome, HelperError> {

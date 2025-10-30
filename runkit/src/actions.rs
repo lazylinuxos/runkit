@@ -31,9 +31,19 @@ impl Default for ActionDispatcher {
 }
 
 impl ActionDispatcher {
+    fn execute(
+        &self,
+        privileged: bool,
+        action: &str,
+        service: Option<&str>,
+        extra: &[&str],
+    ) -> Result<DaemonProcessResponse, String> {
+        let use_pkexec = privileged && self.use_pkexec;
+        execute_helper(self.helper_path.clone(), use_pkexec, action, service, extra)
+    }
+
     pub fn run(&self, action: &str, service: &str) -> Result<String, String> {
-        let helper_path = self.helper_path.clone();
-        let response = execute_helper(helper_path, self.use_pkexec, action, Some(service), &[])?;
+        let response = self.execute(true, action, Some(service), &[])?;
         match response.status.as_str() {
             "ok" => Ok(response
                 .message
@@ -44,15 +54,12 @@ impl ActionDispatcher {
         }
     }
 
-    pub fn fetch_services(&self) -> Result<Vec<ServiceInfo>, String> {
-        let response =
-            execute_helper(self.helper_path.clone(), self.use_pkexec, "list", None, &[])?;
+    pub fn fetch_services(&self, privileged: bool) -> Result<Vec<ServiceInfo>, String> {
+        let response = self.execute(privileged, "list", None, &[])?;
         if response.status.as_str() != "ok" {
-            return Err(
-                response
-                    .message
-                    .unwrap_or_else(|| "runkitd failed to enumerate services".to_string()),
-            );
+            return Err(response
+                .message
+                .unwrap_or_else(|| "runkitd failed to enumerate services".to_string()));
         }
 
         let data = response
@@ -68,13 +75,7 @@ impl ActionDispatcher {
     pub fn fetch_logs(&self, service: &str, lines: usize) -> Result<Vec<LogEntry>, String> {
         let limit_arg = lines.max(1).to_string();
         let extra_args = ["--lines", limit_arg.as_str()];
-        let response = execute_helper(
-            self.helper_path.clone(),
-            self.use_pkexec,
-            "logs",
-            Some(service),
-            &extra_args,
-        )?;
+        let response = self.execute(false, "logs", Some(service), &extra_args)?;
 
         if response.status.as_str() != "ok" {
             return Err(response

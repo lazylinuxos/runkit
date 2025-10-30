@@ -370,14 +370,8 @@ impl ServiceManager {
             return Ok(Vec::new());
         }
 
-        let definition_candidate = self
-            .definitions_dir
-            .join(service)
-            .join("log/main/current");
-        let enabled_candidate = self
-            .enabled_dir
-            .join(service)
-            .join("log/main/current");
+        let definition_candidate = self.definitions_dir.join(service).join("log/main/current");
+        let enabled_candidate = self.enabled_dir.join(service).join("log/main/current");
 
         let log_path = if definition_candidate.exists() {
             definition_candidate

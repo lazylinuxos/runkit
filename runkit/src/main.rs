@@ -38,6 +38,8 @@ struct AppModel {
     log_entries: Vec<LogEntry>,
     log_service: Option<String>,
     log_error: Option<String>,
+    list_refreshing: bool,
+    activity_notes: Vec<String>,
 }
 
 impl AppController {
@@ -83,7 +85,7 @@ impl AppController {
 
     fn request_initial_load(self: &Rc<Self>) {
         self.widgets.show_loading(true);
-        let result = self.dispatcher.fetch_services();
+        let result = self.dispatcher.fetch_services(true);
         self.widgets.show_loading(false);
         match result {
             Ok(services) => self.update_services(services),
@@ -116,18 +118,51 @@ impl AppController {
 
                 if let Some(service) = service {
                     let name = service.name.clone();
+
+                    let service_changed = {
+                        let model = self.model.borrow();
+                        model.log_service.as_deref() != Some(name.as_str())
+                    };
+                    if service_changed {
+                        let mut model = self.model.borrow_mut();
+                        model.log_service = Some(name.clone());
+                        model.log_entries.clear();
+                        model.log_error = None;
+                        model.activity_notes.clear();
+                    }
+
                     self.widgets.show_service_details(&service);
                     self.widgets.action_bar_set_enabled(true, Some(&service));
-                    self.request_logs(name);
+                    let (entries_snapshot, error_snapshot, notes_snapshot) = {
+                        let model = self.model.borrow();
+                        (
+                            model.log_entries.clone(),
+                            model.log_error.clone(),
+                            model.activity_notes.clone(),
+                        )
+                    };
+
+                    if let Some(error) = error_snapshot {
+                        self.widgets.show_activity_error(&name, &error);
+                    } else if !entries_snapshot.is_empty() || !notes_snapshot.is_empty() {
+                        self.widgets
+                            .show_activity(&name, &entries_snapshot, &notes_snapshot);
+                    } else {
+                        self.request_logs(name);
+                    }
                 }
             }
             None => {
+                if self.model.borrow().list_refreshing {
+                    return;
+                }
                 self.widgets.show_placeholder();
                 self.widgets.action_bar_set_enabled(false, None);
                 let mut model = self.model.borrow_mut();
                 model.log_service = None;
                 model.log_entries.clear();
                 model.log_error = None;
+                model.activity_notes.clear();
             }
         }
     }
@@ -163,26 +198,67 @@ impl AppController {
         };
 
         let count = filtered.len();
+        {
+            let mut model = self.model.borrow_mut();
+            model.list_refreshing = true;
+        }
         self.widgets.populate_list(&filtered);
+        let current = self.widgets.current_service();
+        {
+            let mut model = self.model.borrow_mut();
+            model.list_refreshing = false;
+            if current.is_none() {
+                model.log_service = None;
+                model.log_entries.clear();
+                model.log_error = None;
+                model.activity_notes.clear();
+            }
+        }
         count
     }
 
     fn trigger_action(self: &Rc<Self>, action: &'static str) {
         if let Some(service_name) = self.widgets.current_service() {
-            self.widgets.show_action_in_progress(action, &service_name);
             match self.dispatcher.run(action, &service_name) {
                 Ok(message) => {
+                    let (entries_snapshot, notes_snapshot) = {
+                        let mut model = self.model.borrow_mut();
+                        if model.log_service.as_deref() != Some(service_name.as_str()) {
+                            model.log_service = Some(service_name.clone());
+                            model.log_entries.clear();
+                            model.log_error = None;
+                            model.activity_notes.clear();
+                        }
+                        model.log_error = None;
+                        model.activity_notes.insert(0, message.clone());
+                        if model.activity_notes.len() > 20 {
+                            model.activity_notes.truncate(20);
+                        }
+                        (model.log_entries.clone(), model.activity_notes.clone())
+                    };
                     self.widgets
-                        .toast_overlay
-                        .add_toast(adw::Toast::builder().title(&message).build());
+                        .show_activity(&service_name, &entries_snapshot, &notes_snapshot);
                     self.request_refresh(true);
                 }
                 Err(err) => {
-                    self.widgets.toast_overlay.add_toast(
-                        adw::Toast::builder()
-                            .title(&format!("Operation failed: {err}"))
-                            .build(),
-                    );
+                    let error_message = format!("Operation failed: {err}");
+                    let (entries_snapshot, notes_snapshot) = {
+                        let mut model = self.model.borrow_mut();
+                        if model.log_service.as_deref() != Some(service_name.as_str()) {
+                            model.log_service = Some(service_name.clone());
+                            model.log_entries.clear();
+                            model.log_error = None;
+                            model.activity_notes.clear();
+                        }
+                        model.log_error = Some(error_message.clone());
+                        model.activity_notes.insert(0, error_message.clone());
+                        if model.activity_notes.len() > 20 {
+                            model.activity_notes.truncate(20);
+                        }
+                        (model.log_entries.clone(), model.activity_notes.clone())
+                    };
+                    self.widgets
+                        .show_activity(&service_name, &entries_snapshot, &notes_snapshot);
                 }
             }
         }
@@ -192,7 +268,7 @@ impl AppController {
         if !silent {
             self.widgets.show_loading(true);
         }
-        let result = self.dispatcher.fetch_services();
+        let result = self.dispatcher.fetch_services(true);
         self.widgets.show_loading(false);
         match result {
             Ok(services) => self.update_services(services),
@@ -201,16 +277,17 @@ impl AppController {
     }
 
     fn request_logs(self: &Rc<Self>, service: String) {
-        self.widgets.show_log_loading(&service);
+        self.widgets.show_activity_loading(&service);
         match self.dispatcher.fetch_logs(&service, 200) {
             Ok(entries) => {
-                {
+                let notes = {
                     let mut model = self.model.borrow_mut();
                     model.log_service = Some(service.clone());
                     model.log_entries = entries.clone();
                     model.log_error = None;
-                }
-                self.widgets.show_logs(&service, &entries);
+                    model.activity_notes.clone()
+                };
+                self.widgets.show_activity(&service, &entries, &notes);
             }
             Err(err) => {
                 {
@@ -219,7 +296,7 @@ impl AppController {
                     model.log_entries.clear();
                     model.log_error = Some(err.clone());
                 }
-                self.widgets.show_log_error(&service, &err);
+                self.widgets.show_activity_error(&service, &err);
             }
         }
     }

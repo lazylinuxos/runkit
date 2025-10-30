@@ -9,7 +9,7 @@ pub fn runtime_state_short(service: &ServiceInfo) -> String {
     }
 
     if !service.enabled {
-        return "Stopped".to_string();
+        return "Disabled".to_string();
     }
 
     match &service.runtime_state {
@@ -35,7 +35,7 @@ pub fn runtime_state_detail(service: &ServiceInfo) -> String {
         ServiceRuntimeState::Down { since, normally_up } => {
             let downtime = format_duration(*since).to_string();
             if !service.enabled {
-                format!("Stopped (disabled); last ran {downtime} ago")
+                format!("Disabled; last ran {downtime} ago")
             } else if *normally_up {
                 format!("Stopped {downtime} ago; runit will restart automatically")
             } else {
@@ -50,7 +50,7 @@ pub fn runtime_state_detail(service: &ServiceInfo) -> String {
                 format!("Stopped due to error; exited with code {exit_code} after {runtime}")
             } else {
                 format!(
-                    "Stopped (disabled); last start attempt exited with code {exit_code} after {}",
+                    "Disabled; last start attempt exited with code {exit_code} after {}",
                     runtime
                 )
             }
@@ -59,7 +59,7 @@ pub fn runtime_state_detail(service: &ServiceInfo) -> String {
             if service.enabled {
                 "Status unavailable; runit did not report details".to_string()
             } else {
-                "Stopped (disabled); service directory is not linked to /var/service".to_string()
+                "Disabled; service directory is not linked to /var/service".to_string()
             }
         }
     }
@@ -72,13 +72,6 @@ pub fn list_row_subtitle(service: &ServiceInfo) -> String {
         }
         _ => runtime_state_short(service),
     }
-}
-
-pub fn detail_description_text(service: &ServiceInfo) -> String {
-    service
-        .description
-        .clone()
-        .unwrap_or_else(|| "This service has no description yet.".to_string())
 }
 
 pub fn is_running(state: &ServiceRuntimeState) -> bool {

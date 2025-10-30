@@ -1,7 +1,7 @@
 use crate::actions::LogEntry;
 use crate::formatting::{
-    detail_description_text, format_log_entry, is_auto_start, is_running, list_row_subtitle,
-    runtime_state_detail, runtime_state_short, status_level, StatusLevel,
+    StatusLevel, format_log_entry, is_auto_start, is_running, list_row_subtitle,
+    runtime_state_detail, runtime_state_short, status_level,
 };
 use gtk::{cairo, gdk, pango};
 use gtk4 as gtk;
@@ -10,7 +10,6 @@ use runkit_core::ServiceInfo;
 use std::f64::consts::PI;
 
 pub struct AppWidgets {
-    pub toast_overlay: adw::ToastOverlay,
     pub search_entry: gtk::SearchEntry,
     pub list_box: gtk::ListBox,
     pub action_start: gtk::Button,
@@ -21,15 +20,11 @@ pub struct AppWidgets {
     pub action_disable: gtk::Button,
     pub action_check: gtk::Button,
     detail_stack: gtk::Stack,
-    detail_page_stack: adw::ViewStack,
-    detail_switcher: adw::ViewSwitcherBar,
     detail_title: gtk::Label,
     detail_state_label: gtk::Label,
     detail_status_indicator: gtk::DrawingArea,
     detail_status_text: gtk::Label,
-    detail_description: gtk::Label,
-    log_buffer: gtk::TextBuffer,
-    log_view: gtk::TextView,
+    activity_label: gtk::Label,
     banner: adw::Banner,
     summary_label: gtk::Label,
     loading_revealer: gtk::Revealer,
@@ -154,8 +149,8 @@ impl AppWidgets {
         let action_stop = gtk::Button::with_label("Stop");
         let action_restart = gtk::Button::with_label("Restart");
         let action_reload = gtk::Button::with_label("Reload");
-        let action_enable = gtk::Button::with_label("Enable auto-start");
-        let action_disable = gtk::Button::with_label("Disable auto-start");
+        let action_enable = gtk::Button::with_label("Enable service");
+        let action_disable = gtk::Button::with_label("Disable service");
         let action_check = gtk::Button::with_label("Run health check");
 
         let action_row_one = gtk::Box::builder()
@@ -209,13 +204,6 @@ impl AppWidgets {
         tag_row.append(&detail_status_indicator);
         tag_row.append(&detail_status_text);
 
-        let detail_description = gtk::Label::builder()
-            .xalign(0.0)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
-            .css_classes(["body"])
-            .build();
-
         let detail_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
@@ -230,32 +218,15 @@ impl AppWidgets {
         detail_box.append(&action_row_one);
         detail_box.append(&action_row_two);
         detail_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        detail_box.append(&detail_description);
 
-        let log_buffer = gtk::TextBuffer::new(None);
-        let log_view = gtk::TextView::builder()
-            .editable(false)
-            .cursor_visible(false)
-            .wrap_mode(gtk::WrapMode::WordChar)
+        let activity_label = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .css_classes(["body"])
             .build();
-        log_view.set_monospace(true);
-        log_view.set_buffer(Some(&log_buffer));
-
-        let log_scroller = gtk::ScrolledWindow::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .child(&log_view)
-            .build();
-
-        let logs_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_start(24)
-            .margin_end(24)
-            .build();
-        logs_box.append(&log_scroller);
+        activity_label.set_text("Select a service to see recent activity.");
+        detail_box.append(&activity_label);
 
         let placeholder = adw::StatusPage::builder()
             .icon_name("system-run-symbolic")
@@ -263,31 +234,13 @@ impl AppWidgets {
             .description("Pick a service from the list to view details and actions.")
             .build();
 
-        let detail_page_stack = adw::ViewStack::new();
-        detail_page_stack.add_titled(&detail_box, Some("overview"), "Overview");
-        detail_page_stack.add_titled(&logs_box, Some("logs"), "Logs");
-        detail_page_stack.set_visible_child_name("overview");
-
-        let detail_switcher = adw::ViewSwitcherBar::builder()
-            .stack(&detail_page_stack)
-            .reveal(false)
-            .build();
-
-        let detail_container = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .hexpand(true)
-            .vexpand(true)
-            .build();
-        detail_container.append(&detail_page_stack);
-        detail_container.append(&detail_switcher);
-
         let detail_stack = gtk::Stack::builder()
             .hexpand(true)
             .vexpand(true)
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         detail_stack.add_named(&placeholder, Some("placeholder"));
-        detail_stack.add_named(&detail_container, Some("details"));
+        detail_stack.add_named(&detail_box, Some("details"));
         detail_stack.set_visible_child_name("placeholder");
 
         let right_column = gtk::Box::builder()
@@ -311,7 +264,6 @@ impl AppWidgets {
         window.present();
 
         AppWidgets {
-            toast_overlay,
             search_entry,
             list_box,
             action_start,
@@ -322,15 +274,11 @@ impl AppWidgets {
             action_disable,
             action_check,
             detail_stack,
-            detail_page_stack,
-            detail_switcher,
             detail_title,
             detail_state_label,
             detail_status_indicator,
             detail_status_text,
-            detail_description,
-            log_buffer,
-            log_view,
+            activity_label,
             banner,
             summary_label,
             loading_revealer,
@@ -386,13 +334,10 @@ impl AppWidgets {
 
     pub fn show_service_details(&self, service: &ServiceInfo) {
         self.detail_stack.set_visible_child_name("details");
-        self.detail_page_stack.set_visible_child_name("overview");
-        self.detail_switcher.set_reveal(true);
         self.detail_title.set_label(&service.name);
         self.detail_state_label
             .set_label(&runtime_state_detail(service));
-        self.detail_description
-            .set_label(&detail_description_text(service));
+        self.show_activity_loading(&service.name);
 
         self.detail_status_text
             .set_label(&runtime_state_short(service));
@@ -401,7 +346,7 @@ impl AppWidgets {
 
     pub fn show_placeholder(&self) {
         self.detail_stack.set_visible_child_name("placeholder");
-        self.clear_logs();
+        self.clear_activity();
     }
 
     pub fn current_service(&self) -> Option<String> {
@@ -417,32 +362,18 @@ impl AppWidgets {
         let autostart = service
             .map(|s| is_auto_start(s.desired_state))
             .unwrap_or(false);
+        let service_enabled = service.map(|s| s.enabled).unwrap_or(false);
 
-        self.action_start.set_sensitive(enabled && !running);
-        self.action_stop.set_sensitive(enabled && running);
-        self.action_restart.set_sensitive(enabled);
-        self.action_reload.set_sensitive(enabled);
-        self.action_check.set_sensitive(enabled);
+        self.action_start
+            .set_sensitive(enabled && service_enabled && !running);
+        self.action_stop
+            .set_sensitive(enabled && service_enabled && running);
+        self.action_restart
+            .set_sensitive(enabled && service_enabled);
+        self.action_reload.set_sensitive(enabled && service_enabled);
+        self.action_check.set_sensitive(enabled && service_enabled);
         self.action_enable.set_sensitive(enabled && !autostart);
         self.action_disable.set_sensitive(enabled && autostart);
-    }
-
-    pub fn show_action_in_progress(&self, action: &str, service: &str) {
-        let friendly = match action {
-            "start" => "Starting",
-            "stop" => "Stopping",
-            "restart" => "Restarting",
-            "reload" => "Reloading",
-            "enable" => "Enabling auto-start for",
-            "disable" => "Disabling auto-start for",
-            "check" => "Running health check for",
-            "once" => "Running once",
-            other => {
-                self.show_toast(&format!("{other} {service}"));
-                return;
-            }
-        };
-        self.show_toast(&format!("{friendly} {service}"));
     }
 
     pub fn update_status_summary(&self, services: &[ServiceInfo]) {
@@ -461,34 +392,45 @@ impl AppWidgets {
             .set_text(&format!("Showing {count} matches for “{text}”"));
     }
 
-    pub fn show_log_loading(&self, service: &str) {
-        self.detail_switcher.set_reveal(true);
-        self.log_buffer
-            .set_text(&format!("Loading logs for {service}…"));
-    }
+    pub fn show_activity(&self, service: &str, entries: &[LogEntry], notes: &[String]) {
+        const MAX_ITEMS: usize = 5;
 
-    pub fn show_logs(&self, service: &str, entries: &[LogEntry]) {
-        self.detail_switcher.set_reveal(true);
-        if entries.is_empty() {
-            self.log_buffer
-                .set_text(&format!("No log entries found for {service}."));
+        let mut bullet_lines = Vec::new();
+
+        for note in notes.iter().take(MAX_ITEMS) {
+            bullet_lines.push(format!("- {note}"));
+            if bullet_lines.len() >= MAX_ITEMS {
+                break;
+            }
+        }
+
+        if bullet_lines.len() < MAX_ITEMS {
+            let remaining = MAX_ITEMS - bullet_lines.len();
+            let mut logs = entries.iter().rev().take(remaining).collect::<Vec<_>>();
+            logs.reverse();
+            bullet_lines.extend(logs.into_iter().map(|entry| {
+                let line = format_log_entry(entry);
+                format!("- {line}")
+            }));
+        }
+
+        if bullet_lines.is_empty() {
+            self.activity_label
+                .set_text(&format!("No recent activity recorded for {service} yet."));
         } else {
-            let formatted = entries
-                .iter()
-                .map(format_log_entry)
-                .collect::<Vec<_>>()
-                .join("\n");
-            self.log_buffer.set_text(&formatted);
-            let mut end_iter = self.log_buffer.end_iter();
-            self.log_view
-                .scroll_to_iter(&mut end_iter, 0.0, false, 0.0, 0.0);
+            self.activity_label.set_text(&bullet_lines.join("\n"));
         }
     }
 
-    pub fn show_log_error(&self, service: &str, message: &str) {
-        self.detail_switcher.set_reveal(true);
-        self.log_buffer
-            .set_text(&format!("Unable to load logs for {service}: {message}"));
+    pub fn show_activity_error(&self, service: &str, message: &str) {
+        self.activity_label.set_text(&format!(
+            "Unable to load recent activity for {service}: {message}"
+        ));
+    }
+
+    pub fn show_activity_loading(&self, service: &str) {
+        self.activity_label
+            .set_text(&format!("Loading recent activity for {service}…"));
     }
 
     pub fn show_error(&self, message: &str) {
@@ -497,15 +439,9 @@ impl AppWidgets {
         self.banner.set_revealed(true);
     }
 
-    fn show_toast(&self, text: &str) {
-        let toast = adw::Toast::builder().title(text).timeout(2).build();
-        self.toast_overlay.add_toast(toast);
-    }
-
-    pub fn clear_logs(&self) {
-        self.detail_switcher.set_reveal(false);
-        self.detail_page_stack.set_visible_child_name("overview");
-        self.log_buffer.set_text("");
+    pub fn clear_activity(&self) {
+        self.activity_label
+            .set_text("Select a service to see recent activity.");
     }
 
     pub fn row_service_name(&self, row: &gtk::ListBoxRow) -> Option<String> {

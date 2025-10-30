@@ -17,13 +17,16 @@ ICON_SIZES=(16x16 24x24 32x32 48x48 64x64 96x96 128x128 256x256 512x512)
 
 DESKTOP_SOURCE="assets/applications/tech.geektoshi.Runkit.desktop"
 DESKTOP_TARGET="/usr/share/applications/tech.geektoshi.Runkit.desktop"
+DBUS_SERVICE_SOURCE="assets/dbus-1/services/tech.geektoshi.Runkit.service"
+DBUS_SERVICE_TARGET="/usr/share/dbus-1/services/tech.geektoshi.Runkit.service"
+POLKIT_POLICY_SOURCE="assets/polkit-1/actions/tech.geektoshi.Runkit.policy"
+POLKIT_POLICY_TARGET="/usr/share/polkit-1/actions/tech.geektoshi.Runkit.policy"
 
 require_sudo() {
     sudo -v
 }
 
 install_dependencies() {
-    echo "Installing system dependencies..."
     local deps=(
         rustup
         gtk4-devel
@@ -32,12 +35,58 @@ install_dependencies() {
         pango-devel
         pkg-config
     )
-    sudo xbps-install -S "${deps[@]}"
+
+    if ! command -v xbps-query >/dev/null 2>&1; then
+        echo "xbps-query not found; installing all dependencies..."
+        sudo xbps-install -S "${deps[@]}"
+        return
+    fi
+
+    local missing=()
+    echo "Checking system dependencies..."
+    for dep in "${deps[@]}"; do
+        if xbps-query -p pkgver "$dep" >/dev/null 2>&1; then
+            echo "  already installed: ${dep}"
+        else
+            echo "  missing: ${dep}"
+            missing+=("$dep")
+        fi
+    done
+
+    if (( ${#missing[@]} > 0 )); then
+        echo "Installing missing dependencies: ${missing[*]}"
+        sudo xbps-install -S "${missing[@]}"
+    else
+        echo "All dependencies already satisfied."
+    fi
 }
 
 build_binaries() {
     echo "Building packages..."
-    cargo build --release
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        sudo -u "$SUDO_USER" bash -lc '
+            if [[ -f "$HOME/.cargo/env" ]]; then
+                source "$HOME/.cargo/env"
+            fi
+            if ! command -v cargo >/dev/null 2>&1; then
+                echo "Error: cargo not found in PATH for ${USER}. Ensure Rust is installed (rustup) and try again." >&2
+                exit 1
+            fi
+            cargo build --release
+        '
+    else
+        if ! command -v cargo >/dev/null 2>&1; then
+            if [[ -f "$HOME/.cargo/env" ]]; then
+                # shellcheck disable=SC1090
+                source "$HOME/.cargo/env"
+            fi
+        fi
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "Error: cargo not found in PATH. Ensure Rust is installed (rustup) and try again." >&2
+            exit 1
+        fi
+        cargo build --release
+    fi
 }
 
 install_binaries() {
@@ -108,6 +157,24 @@ install_desktop_entry() {
     fi
 }
 
+install_dbus_service() {
+    if [[ -f "$DBUS_SERVICE_SOURCE" ]]; then
+        echo "Installing D-Bus service '$DBUS_SERVICE_SOURCE' -> '$DBUS_SERVICE_TARGET'..."
+        sudo install -D -m644 "$DBUS_SERVICE_SOURCE" "$DBUS_SERVICE_TARGET"
+    else
+        echo "Note: D-Bus service file not found at ${DBUS_SERVICE_SOURCE}; skipping."
+    fi
+}
+
+install_polkit_policy() {
+    if [[ -f "$POLKIT_POLICY_SOURCE" ]]; then
+        echo "Installing polkit policy '$POLKIT_POLICY_SOURCE' -> '$POLKIT_POLICY_TARGET'..."
+        sudo install -D -m644 "$POLKIT_POLICY_SOURCE" "$POLKIT_POLICY_TARGET"
+    else
+        echo "Note: polkit policy not found at ${POLKIT_POLICY_SOURCE}; skipping."
+    fi
+}
+
 uninstall_icons() {
     local removed_any=false
 
@@ -147,6 +214,20 @@ uninstall_desktop_entry() {
     fi
 }
 
+uninstall_dbus_service() {
+    if [[ -f "$DBUS_SERVICE_TARGET" ]]; then
+        echo "Removing D-Bus service '$DBUS_SERVICE_TARGET'..."
+        sudo rm -f "$DBUS_SERVICE_TARGET"
+    fi
+}
+
+uninstall_polkit_policy() {
+    if [[ -f "$POLKIT_POLICY_TARGET" ]]; then
+        echo "Removing polkit policy '$POLKIT_POLICY_TARGET'..."
+        sudo rm -f "$POLKIT_POLICY_TARGET"
+    fi
+}
+
 refresh_desktop_database() {
     if command -v update-desktop-database >/dev/null 2>&1; then
         local dir
@@ -180,12 +261,16 @@ case "$ACTION" in
         install_binaries
         install_icons
         install_desktop_entry
+        install_dbus_service
+        install_polkit_policy
         ;;
     uninstall)
         require_sudo
         uninstall_binaries
         uninstall_icons
         uninstall_desktop_entry
+        uninstall_dbus_service
+        uninstall_polkit_policy
         ;;
     *)
         echo "Usage: $SCRIPT_NAME [install|uninstall]" >&2

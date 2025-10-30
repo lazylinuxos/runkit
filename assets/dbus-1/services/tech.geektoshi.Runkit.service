@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=tech.geektoshi.Runkit
+Exec=/usr/libexec/runkit --gapplication-service
