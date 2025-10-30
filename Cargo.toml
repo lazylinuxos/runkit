@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "runkit-core",
+    "runkit",
+    "runkitd",
+]
+
+resolver = "2"
