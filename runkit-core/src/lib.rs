@@ -1,7 +1,10 @@
 //! Core domain layer for discovering and describing Void Linux runit services.
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::VecDeque;
 use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -127,6 +130,14 @@ mod tests {
     }
 
     #[test]
+    fn decodes_tai64n_timestamp() {
+        let stamp = "400000000000000000000000";
+        let parsed = super::decode_tai64n(stamp).expect("failed to parse tai64n epoch");
+        assert_eq!(parsed.0, 0);
+        assert_eq!(parsed.1, 0);
+    }
+
+    #[test]
     fn validates_service_name() {
         let manager = ServiceManager::default();
         assert!(manager.validate_service_name("valid_name-01").is_ok());
@@ -153,6 +164,15 @@ pub struct ServiceInfo {
     pub description: Option<String>,
 }
 
+/// Structured log entry emitted by a runit service logger.
+#[derive(Debug, Clone)]
+pub struct ServiceLogEntry {
+    pub timestamp_unix: Option<i64>,
+    pub timestamp_nanos: Option<u32>,
+    pub timestamp_raw: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("I/O error while accessing {path:?}: {source}")]
@@ -167,6 +187,9 @@ pub enum ServiceError {
 
     #[error("invalid service name: {0}")]
     InvalidServiceName(String),
+
+    #[error("log stream unavailable for service {0}")]
+    LogUnavailable(String),
 
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -338,4 +361,94 @@ impl ServiceManager {
             Err(ServiceError::InvalidServiceName(service.to_string()))
         }
     }
+
+    /// Tail the newest log entries for a service, if its logger writes to svlogd-style files.
+    pub fn tail_logs(&self, service: &str, limit: usize) -> Result<Vec<ServiceLogEntry>> {
+        self.validate_service_name(service)?;
+
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let definition_candidate = self
+            .definitions_dir
+            .join(service)
+            .join("log/main/current");
+        let enabled_candidate = self
+            .enabled_dir
+            .join(service)
+            .join("log/main/current");
+
+        let log_path = if definition_candidate.exists() {
+            definition_candidate
+        } else if enabled_candidate.exists() {
+            enabled_candidate
+        } else {
+            return Ok(Vec::new());
+        };
+
+        match read_svlogd_tail(&log_path, limit) {
+            Ok(entries) => Ok(entries),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(err) => Err(ServiceError::from_io(&log_path, err)),
+        }
+    }
+}
+
+fn read_svlogd_tail(path: &Path, limit: usize) -> std::io::Result<Vec<ServiceLogEntry>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut entries: VecDeque<ServiceLogEntry> = VecDeque::with_capacity(limit);
+
+    for line in reader.lines() {
+        let line = line?;
+        if entries.len() == limit {
+            entries.pop_front();
+        }
+        entries.push_back(parse_svlogd_line(&line));
+    }
+
+    Ok(entries.into_iter().collect())
+}
+
+fn parse_svlogd_line(line: &str) -> ServiceLogEntry {
+    if let Some(rest) = line.strip_prefix('@') {
+        if rest.len() >= 24 {
+            let stamp = &rest[..24];
+            let message = rest[24..].trim_start().to_string();
+            let (unix, nanos) = decode_tai64n(stamp).unwrap_or((-1, 0));
+            let timestamp_unix = if unix >= 0 { Some(unix) } else { None };
+            let timestamp_nanos = if unix >= 0 { Some(nanos) } else { None };
+            return ServiceLogEntry {
+                timestamp_unix,
+                timestamp_nanos,
+                timestamp_raw: Some(stamp.to_string()),
+                message,
+            };
+        }
+    }
+
+    ServiceLogEntry {
+        timestamp_unix: None,
+        timestamp_nanos: None,
+        timestamp_raw: None,
+        message: line.to_string(),
+    }
+}
+
+fn decode_tai64n(stamp: &str) -> Option<(i64, u32)> {
+    if stamp.len() != 24 {
+        return None;
+    }
+
+    let secs = u64::from_str_radix(&stamp[..16], 16).ok()?;
+    let nanos = u32::from_str_radix(&stamp[16..], 16).ok()?;
+
+    const TAI64_UNIX_OFFSET: u64 = 0x4000_0000_0000_0000;
+    if secs < TAI64_UNIX_OFFSET {
+        return None;
+    }
+
+    let unix_secs = secs - TAI64_UNIX_OFFSET;
+    Some((unix_secs as i64, nanos))
 }

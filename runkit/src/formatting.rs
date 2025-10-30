@@ -1,3 +1,5 @@
+use crate::actions::LogEntry;
+use gtk4::glib;
 use humantime::format_duration;
 use runkit_core::{DesiredState, ServiceInfo, ServiceRuntimeState};
 
@@ -110,6 +112,39 @@ pub fn status_level(service: &ServiceInfo) -> StatusLevel {
     }
 }
 
+pub fn format_log_entry(entry: &LogEntry) -> String {
+    let timestamp = entry
+        .unix_seconds
+        .and_then(|secs| format_timestamp(secs, entry.nanos.unwrap_or(0)));
+
+    let prefix = match (timestamp, &entry.raw) {
+        (Some(ts), _) => ts,
+        (None, Some(raw)) => format!("@{raw}"),
+        (None, None) => String::new(),
+    };
+
+    if prefix.is_empty() {
+        entry.message.trim_end().to_string()
+    } else {
+        format!("{prefix}  {}", entry.message.trim_end())
+    }
+}
+
+fn format_timestamp(secs: i64, nanos: u32) -> Option<String> {
+    let datetime = glib::DateTime::from_unix_utc(secs).ok()?;
+    let local = datetime.to_timezone(&glib::TimeZone::local()).ok()?;
+    let base = local
+        .format("%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|s| s.to_string())?;
+    let micros = nanos / 1_000;
+
+    if micros > 0 {
+        Some(format!("{base}.{micros:06}"))
+    } else {
+        Some(base)
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusLevel {
     Good,

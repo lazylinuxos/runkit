@@ -92,3 +92,27 @@ Install it under `/usr/share/polkit-1/actions/org.voidlinux.runkit.policy` and e
 - Persist service refresh timers and live updates (inotify/watch the supervise sockets).
 - Tail structured logs through the helper and surface them in the UI log tab.
 - Expand helper commands to surface richer error details back to the UI (exit status, stderr snippets).
+
+## App Icons
+
+Place the launcher artwork under `assets/icons/hicolor`. The install script looks for
+`runkit.png` at the standard hicolor sizes (`16x16` through `512x512`) and an optional
+`runkit.svg` in the `scalable` directory:
+
+```
+assets/icons/hicolor/
+  16x16/apps/runkit.png
+  24x24/apps/runkit.png
+  ...
+  256x256/apps/runkit.png
+  512x512/apps/runkit.png
+  scalable/apps/runkit.svg
+```
+
+During `./install.sh install` any present files are copied into `/usr/share/icons/hicolor`
+and `gtk-update-icon-cache` is refreshed automatically. Leave the directories in place so
+the assets can be dropped in without touching the script.
+
+The launcher metadata lives at `assets/applications/tech.geektoshi.Runkit.desktop`. The installer copies
+it into `/usr/share/applications` (refreshing the desktop database when available), so
+updating the desktop entry in-repo is all that's needed for the shell to pick up changes.

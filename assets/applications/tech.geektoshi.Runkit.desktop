@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Runkit
+Comment=Manage Void Linux runit services
+Exec=/usr/libexec/runkit
+Icon=runkit
+Terminal=false
+StartupNotify=true
+DBusActivatable=true
+X-GNOME-Application-ID=tech.geektoshi.Runkit
+Categories=System;Utility;
+Keywords=runit;services;manager;
+X-GNOME-UsesNotifications=true

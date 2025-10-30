@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use runkit_core::{DesiredState, ServiceInfo, ServiceManager, ServiceRuntimeState};
+use runkit_core::{DesiredState, ServiceInfo, ServiceLogEntry, ServiceManager, ServiceRuntimeState};
 use serde::Serialize;
 use serde_json::Value;
 use std::os::unix::fs as unix_fs;
@@ -34,6 +34,12 @@ enum HelperCommand {
     Disable { service: String },
     /// List all available services with their current status.
     List,
+    /// Tail logs for a service.
+    Logs {
+        service: String,
+        #[arg(long, default_value_t = 200)]
+        lines: usize,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +145,9 @@ impl From<runkit_core::ServiceError> for HelperError {
                 service,
                 message,
             },
+            runkit_core::ServiceError::LogUnavailable(service) => {
+                HelperError::Other(format!("log stream unavailable for {service}"))
+            }
             runkit_core::ServiceError::Other(err) => HelperError::Other(err.to_string()),
         }
     }
@@ -195,6 +204,7 @@ impl HelperContext {
             HelperCommand::Enable { service } => self.enable(&service),
             HelperCommand::Disable { service } => self.disable(&service),
             HelperCommand::List => self.list(),
+            HelperCommand::Logs { service, lines } => self.logs(&service, lines),
         }
     }
 
@@ -270,6 +280,15 @@ impl HelperContext {
     fn list(&self) -> Result<CommandOutcome, HelperError> {
         let services = self.manager.list_services()?;
         let snapshots: Vec<ServiceSnapshot> = services.iter().map(ServiceSnapshot::from).collect();
+        let data =
+            serde_json::to_value(snapshots).map_err(|err| HelperError::Other(err.to_string()))?;
+        Ok(CommandOutcome::with(None, Some(data)))
+    }
+
+    fn logs(&self, service: &str, lines: usize) -> Result<CommandOutcome, HelperError> {
+        let entries = self.manager.tail_logs(service, lines)?;
+        let snapshots: Vec<LogEntrySnapshot> =
+            entries.into_iter().map(LogEntrySnapshot::from).collect();
         let data =
             serde_json::to_value(snapshots).map_err(|err| HelperError::Other(err.to_string()))?;
         Ok(CommandOutcome::with(None, Some(data)))
@@ -359,6 +378,25 @@ impl From<&ServiceRuntimeState> for SnapshotRuntimeState {
             ServiceRuntimeState::Unknown { raw } => {
                 SnapshotRuntimeState::Unknown { raw: raw.clone() }
             }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LogEntrySnapshot {
+    unix_seconds: Option<i64>,
+    nanos: Option<u32>,
+    raw: Option<String>,
+    message: String,
+}
+
+impl From<ServiceLogEntry> for LogEntrySnapshot {
+    fn from(entry: ServiceLogEntry) -> Self {
+        LogEntrySnapshot {
+            unix_seconds: entry.timestamp_unix,
+            nanos: entry.timestamp_nanos,
+            raw: entry.timestamp_raw,
+            message: entry.message,
         }
     }
 }

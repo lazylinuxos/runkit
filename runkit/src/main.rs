@@ -2,7 +2,7 @@ mod actions;
 mod formatting;
 mod ui;
 
-use actions::ActionDispatcher;
+use actions::{ActionDispatcher, LogEntry};
 use gtk::glib;
 use gtk4 as gtk;
 use libadwaita::{self as adw, Application, prelude::*};
@@ -14,7 +14,7 @@ fn main() -> glib::ExitCode {
     adw::init().expect("Failed to initialize libadwaita");
 
     let app = Application::builder()
-        .application_id("org.voidlinux.Runkit")
+        .application_id("tech.geektoshi.Runkit")
         .build();
 
     app.connect_activate(|app| {
@@ -35,6 +35,9 @@ struct AppController {
 struct AppModel {
     services: Vec<ServiceInfo>,
     filter_text: String,
+    log_entries: Vec<LogEntry>,
+    log_service: Option<String>,
+    log_error: Option<String>,
 }
 
 impl AppController {
@@ -102,20 +105,29 @@ impl AppController {
     fn on_row_selected(self: &Rc<Self>, row: Option<&gtk::ListBoxRow>) {
         match row.and_then(|r| self.widgets.row_service_name(r)) {
             Some(service_name) => {
-                if let Some(service) = self
-                    .model
-                    .borrow()
-                    .services
-                    .iter()
-                    .find(|service| service.name == service_name)
-                {
-                    self.widgets.show_service_details(service);
-                    self.widgets.action_bar_set_enabled(true, Some(service));
+                let service = {
+                    self.model
+                        .borrow()
+                        .services
+                        .iter()
+                        .find(|service| service.name == service_name)
+                        .cloned()
+                };
+
+                if let Some(service) = service {
+                    let name = service.name.clone();
+                    self.widgets.show_service_details(&service);
+                    self.widgets.action_bar_set_enabled(true, Some(&service));
+                    self.request_logs(name);
                 }
             }
             None => {
                 self.widgets.show_placeholder();
                 self.widgets.action_bar_set_enabled(false, None);
+                let mut model = self.model.borrow_mut();
+                model.log_service = None;
+                model.log_entries.clear();
+                model.log_error = None;
             }
         }
     }
@@ -125,6 +137,7 @@ impl AppController {
         self.widgets
             .update_status_summary(&self.model.borrow().services);
         self.render_service_list();
+        self.refresh_logs_for_selection();
     }
 
     fn render_service_list(self: &Rc<Self>) -> usize {
@@ -184,6 +197,36 @@ impl AppController {
         match result {
             Ok(services) => self.update_services(services),
             Err(err) => self.widgets.show_error(&err),
+        }
+    }
+
+    fn request_logs(self: &Rc<Self>, service: String) {
+        self.widgets.show_log_loading(&service);
+        match self.dispatcher.fetch_logs(&service, 200) {
+            Ok(entries) => {
+                {
+                    let mut model = self.model.borrow_mut();
+                    model.log_service = Some(service.clone());
+                    model.log_entries = entries.clone();
+                    model.log_error = None;
+                }
+                self.widgets.show_logs(&service, &entries);
+            }
+            Err(err) => {
+                {
+                    let mut model = self.model.borrow_mut();
+                    model.log_service = Some(service.clone());
+                    model.log_entries.clear();
+                    model.log_error = Some(err.clone());
+                }
+                self.widgets.show_log_error(&service, &err);
+            }
+        }
+    }
+
+    fn refresh_logs_for_selection(self: &Rc<Self>) {
+        if let Some(service_name) = self.widgets.current_service() {
+            self.request_logs(service_name);
         }
     }
 }

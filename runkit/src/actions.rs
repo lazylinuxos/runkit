@@ -33,7 +33,7 @@ impl Default for ActionDispatcher {
 impl ActionDispatcher {
     pub fn run(&self, action: &str, service: &str) -> Result<String, String> {
         let helper_path = self.helper_path.clone();
-        let response = execute_helper(helper_path, self.use_pkexec, action, Some(service))?;
+        let response = execute_helper(helper_path, self.use_pkexec, action, Some(service), &[])?;
         match response.status.as_str() {
             "ok" => Ok(response
                 .message
@@ -46,7 +46,7 @@ impl ActionDispatcher {
 
     pub fn fetch_services(&self) -> Result<Vec<ServiceInfo>, String> {
         let response =
-            execute_helper(self.helper_path.clone(), self.use_pkexec, "list", None)?;
+            execute_helper(self.helper_path.clone(), self.use_pkexec, "list", None, &[])?;
         if response.status.as_str() != "ok" {
             return Err(
                 response
@@ -64,6 +64,33 @@ impl ActionDispatcher {
 
         Ok(snapshots.into_iter().map(ServiceInfo::from).collect())
     }
+
+    pub fn fetch_logs(&self, service: &str, lines: usize) -> Result<Vec<LogEntry>, String> {
+        let limit_arg = lines.max(1).to_string();
+        let extra_args = ["--lines", limit_arg.as_str()];
+        let response = execute_helper(
+            self.helper_path.clone(),
+            self.use_pkexec,
+            "logs",
+            Some(service),
+            &extra_args,
+        )?;
+
+        if response.status.as_str() != "ok" {
+            return Err(response
+                .message
+                .unwrap_or_else(|| format!("runkitd failed to stream logs for {service}")));
+        }
+
+        let data = response
+            .data
+            .ok_or_else(|| "runkitd returned no log data".to_string())?;
+
+        let entries: Vec<LogEntrySnapshot> = serde_json::from_value(data)
+            .map_err(|err| format!("Failed to decode runkitd logs response: {err}"))?;
+
+        Ok(entries.into_iter().map(LogEntry::from).collect())
+    }
 }
 
 fn execute_helper(
@@ -71,6 +98,7 @@ fn execute_helper(
     use_pkexec: bool,
     action: &str,
     service: Option<&str>,
+    extra: &[&str],
 ) -> Result<DaemonProcessResponse, String> {
     let mut command = if use_pkexec {
         let mut cmd = Command::new("pkexec");
@@ -82,6 +110,9 @@ fn execute_helper(
     command.arg(action);
     if let Some(service) = service {
         command.arg(service);
+    }
+    for arg in extra {
+        command.arg(arg);
     }
 
     let action_label = match service {
@@ -161,6 +192,33 @@ struct ServiceSnapshot {
     desired_state: SnapshotDesiredState,
     runtime_state: SnapshotRuntimeState,
     description: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub unix_seconds: Option<i64>,
+    pub nanos: Option<u32>,
+    pub raw: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogEntrySnapshot {
+    unix_seconds: Option<i64>,
+    nanos: Option<u32>,
+    raw: Option<String>,
+    message: String,
+}
+
+impl From<LogEntrySnapshot> for LogEntry {
+    fn from(snapshot: LogEntrySnapshot) -> Self {
+        LogEntry {
+            unix_seconds: snapshot.unix_seconds,
+            nanos: snapshot.nanos,
+            raw: snapshot.raw,
+            message: snapshot.message,
+        }
+    }
 }
 
 impl From<ServiceSnapshot> for ServiceInfo {
