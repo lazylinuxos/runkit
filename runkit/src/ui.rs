@@ -3,14 +3,16 @@ use crate::formatting::{
     StatusLevel, format_log_entry, is_auto_start, is_running, list_row_subtitle,
     runtime_state_detail, runtime_state_short, status_level,
 };
-use gtk::{cairo, gdk, pango};
+use gtk::{cairo, gdk, gio, glib, pango};
 use gtk4 as gtk;
 use libadwaita::{self as adw, prelude::*};
 use runkit_core::ServiceInfo;
-use std::f64::consts::PI;
+use std::{f64::consts::PI, rc::Rc};
 
 pub struct AppWidgets {
+    pub window: adw::ApplicationWindow,
     pub search_entry: gtk::SearchEntry,
+    pub service_filter_toggle: gtk::ToggleButton,
     pub list_box: gtk::ListBox,
     pub action_start: gtk::Button,
     pub action_stop: gtk::Button,
@@ -22,6 +24,7 @@ pub struct AppWidgets {
     detail_stack: gtk::Stack,
     detail_title: gtk::Label,
     detail_state_label: gtk::Label,
+    detail_description_label: gtk::Label,
     detail_status_indicator: gtk::DrawingArea,
     detail_status_text: gtk::Label,
     activity_label: gtk::Label,
@@ -29,6 +32,9 @@ pub struct AppWidgets {
     summary_label: gtk::Label,
     loading_revealer: gtk::Revealer,
     loading_spinner: gtk::Spinner,
+    pub menu_popover: gtk::Popover,
+    pub preferences_action: gio::SimpleAction,
+    pub about_action: gio::SimpleAction,
 }
 
 fn build_status_indicator(level: StatusLevel) -> gtk::DrawingArea {
@@ -70,8 +76,61 @@ fn status_indicator_color(level: StatusLevel) -> gdk::RGBA {
     }
 }
 
+fn build_theme_circle(theme: ThemeCircle) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder()
+        .content_width(24)
+        .content_height(24)
+        .build();
+    area.set_draw_func(move |_area, cr, width, height| {
+        cr.set_antialias(cairo::Antialias::Best);
+        let size = f64::from(width.min(height));
+        let radius = (size / 2.0) - 2.0;
+        let cx = f64::from(width) / 2.0;
+        let cy = f64::from(height) / 2.0;
+
+        let _ = cr.save();
+        cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
+        cr.clip();
+
+        match theme {
+            ThemeCircle::System => {
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.rectangle(cx, cy - radius, radius, radius * 2.0);
+                let _ = cr.fill();
+
+                cr.set_source_rgb(0.1, 0.1, 0.1);
+                cr.rectangle(cx - radius, cy - radius, radius, radius * 2.0);
+                let _ = cr.fill();
+            }
+            ThemeCircle::Light => {
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                let _ = cr.paint();
+            }
+            ThemeCircle::Dark => {
+                cr.set_source_rgb(0.1, 0.1, 0.1);
+                let _ = cr.paint();
+            }
+        }
+
+        let _ = cr.restore();
+        cr.set_line_width(2.0);
+        cr.set_source_rgb(0.2, 0.2, 0.2);
+        cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
+        let _ = cr.stroke();
+    });
+
+    area
+}
+
+#[derive(Clone, Copy)]
+enum ThemeCircle {
+    System,
+    Light,
+    Dark,
+}
+
 impl AppWidgets {
-    pub fn new(app: &adw::Application) -> Self {
+    pub fn new(app: &adw::Application, show_all_services: bool) -> Self {
         gtk::Window::set_default_icon_name("runkit");
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -87,7 +146,170 @@ impl AppWidgets {
         let header = adw::HeaderBar::new();
         let window_title = adw::WindowTitle::builder().title("Runkit").build();
         header.set_title_widget(Some(&window_title));
+        header.set_show_start_title_buttons(false);
+        header.set_show_end_title_buttons(false);
         toolbar_view.add_top_bar(&header);
+
+        let header_logo = gtk::Image::from_icon_name("runkit");
+        header_logo.set_pixel_size(24);
+        header_logo.set_margin_start(6);
+        header_logo.set_valign(gtk::Align::Center);
+        header.pack_start(&header_logo);
+
+        let style_manager = adw::StyleManager::default();
+        let initial_scheme = style_manager.color_scheme();
+        let current_theme_key = match initial_scheme {
+            adw::ColorScheme::ForceLight => "light",
+            adw::ColorScheme::ForceDark => "dark",
+            _ => "system",
+        };
+
+        let theme_action = gio::SimpleAction::new_stateful(
+            "theme",
+            Some(&glib::VariantTy::STRING),
+            &glib::Variant::from(current_theme_key),
+        );
+        app.add_action(&theme_action);
+
+        let style_manager_for_action = style_manager.clone();
+        theme_action.connect_change_state(move |action, value| {
+            let Some(value) = value else {
+                return;
+            };
+            if let Some(theme_key) = value.str() {
+                action.set_state(value);
+                let scheme = match theme_key {
+                    "light" => adw::ColorScheme::ForceLight,
+                    "dark" => adw::ColorScheme::ForceDark,
+                    _ => adw::ColorScheme::Default,
+                };
+                style_manager_for_action.set_color_scheme(scheme);
+            }
+        });
+
+        let preferences_action = gio::SimpleAction::new("preferences", None);
+        app.add_action(&preferences_action);
+        let about_action = gio::SimpleAction::new("about", None);
+        app.add_action(&about_action);
+
+        let menu_button = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        let popover = gtk::Popover::new();
+        menu_button.set_popover(Some(&popover));
+
+        let popover_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+
+        let theme_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+
+        let make_theme_button = |theme: ThemeCircle, tooltip: &str| {
+            let button = gtk::Button::builder().has_frame(false).build();
+            button.add_css_class("flat");
+            button.set_child(Some(&build_theme_circle(theme)));
+            button.set_tooltip_text(Some(tooltip));
+            button
+        };
+
+        let system_button = make_theme_button(ThemeCircle::System, "Match system theme");
+        let light_button = make_theme_button(ThemeCircle::Light, "Use light theme");
+        let dark_button = make_theme_button(ThemeCircle::Dark, "Use dark theme");
+
+        let theme_buttons = vec![
+            ("system".to_string(), system_button.clone()),
+            ("light".to_string(), light_button.clone()),
+            ("dark".to_string(), dark_button.clone()),
+        ];
+
+        for (key, button) in theme_buttons.iter() {
+            let action = theme_action.clone();
+            let popover_clone = popover.clone();
+            let key = key.clone();
+            button.connect_clicked(move |_| {
+                action.activate(Some(&glib::Variant::from(key.as_str())));
+                popover_clone.popdown();
+            });
+        }
+
+        let theme_buttons_rc = Rc::new(theme_buttons);
+        let refresh_theme_buttons =
+            |scheme: adw::ColorScheme, buttons: &[(String, gtk::Button)]| {
+                let active_key = match scheme {
+                    adw::ColorScheme::ForceLight => "light",
+                    adw::ColorScheme::ForceDark => "dark",
+                    _ => "system",
+                };
+                for (name, button) in buttons.iter() {
+                    let ctx = button.style_context();
+                    if name == active_key {
+                        ctx.add_class("theme-active");
+                    } else {
+                        ctx.remove_class("theme-active");
+                    }
+                }
+            };
+        refresh_theme_buttons(initial_scheme, &theme_buttons_rc);
+        let buttons_for_notify = Rc::clone(&theme_buttons_rc);
+        style_manager.connect_color_scheme_notify(move |manager| {
+            refresh_theme_buttons(manager.color_scheme(), &buttons_for_notify);
+        });
+
+        theme_box.append(&system_button);
+        theme_box.append(&light_button);
+        theme_box.append(&dark_button);
+
+        let theme_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .build();
+        theme_list.add_css_class("boxed-list");
+
+        let theme_row = adw::ActionRow::builder().title("Switch theme").build();
+        theme_row.add_suffix(&theme_box);
+        theme_row.set_activatable(false);
+        theme_list.append(&theme_row);
+        popover_box.append(&theme_list);
+
+        let menu_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .build();
+        menu_list.add_css_class("boxed-list");
+
+        let prefs_row = adw::ActionRow::builder()
+            .title("Preferences")
+            .activatable(true)
+            .build();
+        prefs_row.set_action_name(Some("app.preferences"));
+        menu_list.append(&prefs_row);
+
+        let about_row = adw::ActionRow::builder()
+            .title("About Runkit")
+            .activatable(true)
+            .build();
+        about_row.set_action_name(Some("app.about"));
+        menu_list.append(&about_row);
+
+        popover_box.append(&menu_list);
+        popover.set_child(Some(&popover_box));
+
+        let window_controls = gtk::WindowControls::new(gtk::PackType::End);
+        let header_controls_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        header_controls_box.append(&menu_button);
+        header_controls_box.append(&window_controls);
+        header.pack_end(&header_controls_box);
 
         let banner = adw::Banner::new("");
         banner.set_revealed(false);
@@ -109,6 +331,26 @@ impl AppWidgets {
             .placeholder_text("Search services")
             .build();
         search_entry.set_hexpand(true);
+
+        let service_filter_toggle = gtk::ToggleButton::builder().label("All services").build();
+        service_filter_toggle.add_css_class("flat");
+        service_filter_toggle.set_active(show_all_services);
+        if show_all_services {
+            service_filter_toggle.set_label("All services");
+            service_filter_toggle
+                .set_tooltip_text(Some("Click to hide disabled services from the list."));
+        } else {
+            service_filter_toggle.set_label("Enabled only");
+            service_filter_toggle
+                .set_tooltip_text(Some("Click to include disabled services in the list."));
+        }
+
+        let controls_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        controls_row.append(&search_entry);
+        controls_row.append(&service_filter_toggle);
 
         let loading_spinner = gtk::Spinner::builder().spinning(false).build();
         let loading_revealer = gtk::Revealer::builder()
@@ -137,8 +379,8 @@ impl AppWidgets {
             .margin_end(16)
             .build();
         left_column.set_width_request(340);
+        left_column.append(&controls_row);
         left_column.append(&summary_label);
-        left_column.append(&search_entry);
         left_column.append(&loading_revealer);
         left_column.append(&list_scroller);
 
@@ -184,6 +426,14 @@ impl AppWidgets {
             .wrap_mode(pango::WrapMode::WordChar)
             .build();
 
+        let detail_description_label = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .css_classes(["body"])
+            .build();
+        detail_description_label.set_text("No description available.");
+
         let detail_status_indicator = gtk::DrawingArea::builder()
             .content_width(14)
             .content_height(14)
@@ -213,6 +463,7 @@ impl AppWidgets {
             .margin_end(24)
             .build();
         detail_box.append(&detail_title);
+        detail_box.append(&detail_description_label);
         detail_box.append(&tag_row);
         detail_box.append(&detail_state_label);
         detail_box.append(&action_row_one);
@@ -264,7 +515,9 @@ impl AppWidgets {
         window.present();
 
         AppWidgets {
+            window: window.clone(),
             search_entry,
+            service_filter_toggle,
             list_box,
             action_start,
             action_stop,
@@ -276,6 +529,7 @@ impl AppWidgets {
             detail_stack,
             detail_title,
             detail_state_label,
+            detail_description_label,
             detail_status_indicator,
             detail_status_text,
             activity_label,
@@ -283,6 +537,9 @@ impl AppWidgets {
             summary_label,
             loading_revealer,
             loading_spinner,
+            menu_popover: popover,
+            preferences_action,
+            about_action,
         }
     }
 
@@ -332,11 +589,49 @@ impl AppWidgets {
         }
     }
 
+    pub fn set_service_filter_toggle(&self, show_all: bool) {
+        if self.service_filter_toggle.is_active() != show_all {
+            self.service_filter_toggle.set_active(show_all);
+        }
+        self.update_service_filter_toggle_label(show_all);
+    }
+
+    pub fn update_service_filter_toggle_label(&self, show_all: bool) {
+        let label = if show_all {
+            "All services"
+        } else {
+            "Enabled only"
+        };
+        self.service_filter_toggle.set_label(label);
+        let tooltip = if show_all {
+            "Click to hide disabled services from the list."
+        } else {
+            "Click to include disabled services in the list."
+        };
+        self.service_filter_toggle.set_tooltip_text(Some(tooltip));
+    }
+
+    pub fn select_service(&self, service: &str) {
+        let mut child = self.list_box.first_child();
+        while let Some(widget) = child {
+            if let Ok(row) = widget.clone().downcast::<gtk::ListBoxRow>() {
+                if let Some(name) = self.row_service_name(&row) {
+                    if name == service {
+                        self.list_box.select_row(Some(&row));
+                        return;
+                    }
+                }
+            }
+            child = widget.next_sibling();
+        }
+    }
+
     pub fn show_service_details(&self, service: &ServiceInfo) {
         self.detail_stack.set_visible_child_name("details");
         self.detail_title.set_label(&service.name);
         self.detail_state_label
             .set_label(&runtime_state_detail(service));
+        self.show_description(service.description.as_deref());
         self.show_activity_loading(&service.name);
 
         self.detail_status_text
@@ -347,6 +642,35 @@ impl AppWidgets {
     pub fn show_placeholder(&self) {
         self.detail_stack.set_visible_child_name("placeholder");
         self.clear_activity();
+        self.clear_description();
+    }
+
+    pub fn show_description(&self, description: Option<&str>) {
+        match description {
+            Some(text) if !text.trim().is_empty() => {
+                self.detail_description_label.set_label(text.trim());
+            }
+            _ => {
+                self.detail_description_label
+                    .set_label("No description available.");
+            }
+        }
+    }
+
+    pub fn show_description_loading(&self, service: &str) {
+        self.detail_description_label
+            .set_label(&format!("Loading description for {service}..."));
+    }
+
+    pub fn show_description_error(&self, service: &str, message: &str) {
+        self.detail_description_label.set_label(&format!(
+            "Unable to load description for {service}: {message}"
+        ));
+    }
+
+    pub fn clear_description(&self) {
+        self.detail_description_label
+            .set_label("No description available.");
     }
 
     pub fn current_service(&self) -> Option<String> {

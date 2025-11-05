@@ -2,6 +2,13 @@
 
 Graphical manager for Void Linux runit services. The application targets a friendly, guided user experience that balances power-user workflows with newcomers who just want to start, stop, or understand system services.
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/1-services.png" alt="Runkit Service Manager" width="45%" />
+  <img src="assets/screenshots/2-preferences.png" alt="Runkit Preferences" width="45%" />
+</p>
+
 ## Workspace Layout
 
 - `runkit-core`: service discovery, status parsing, and shared domain types.

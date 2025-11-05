@@ -92,6 +92,25 @@ impl ActionDispatcher {
 
         Ok(entries.into_iter().map(LogEntry::from).collect())
     }
+
+    pub fn fetch_description(&self, service: &str) -> Result<Option<String>, String> {
+        let response = self.execute(false, "describe", Some(service), &[])?;
+
+        if response.status.as_str() != "ok" {
+            return Err(response
+                .message
+                .unwrap_or_else(|| format!("runkitd failed to describe {service}")));
+        }
+
+        let data = response
+            .data
+            .ok_or_else(|| "runkitd returned no description data".to_string())?;
+
+        let snapshot: DescriptionSnapshot = serde_json::from_value(data)
+            .map_err(|err| format!("Failed to decode runkitd description response: {err}"))?;
+
+        Ok(snapshot.description)
+    }
 }
 
 fn execute_helper(
@@ -220,6 +239,11 @@ impl From<LogEntrySnapshot> for LogEntry {
             message: snapshot.message,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct DescriptionSnapshot {
+    description: Option<String>,
 }
 
 impl From<ServiceSnapshot> for ServiceInfo {
