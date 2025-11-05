@@ -66,12 +66,7 @@ pub fn runtime_state_detail(service: &ServiceInfo) -> String {
 }
 
 pub fn list_row_subtitle(service: &ServiceInfo) -> String {
-    match service.description.as_ref() {
-        Some(description) if !description.is_empty() => {
-            format!("{} — {}", runtime_state_short(service), description)
-        }
-        _ => runtime_state_short(service),
-    }
+    runtime_state_short(service)
 }
 
 pub fn is_running(state: &ServiceRuntimeState) -> bool {

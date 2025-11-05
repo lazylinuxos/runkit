@@ -350,6 +350,64 @@ impl ServiceManager {
         None
     }
 
+    pub fn service_description(&self, service: &str) -> Result<Option<String>> {
+        self.validate_service_name(service)?;
+        let definition_path = self.definitions_dir.join(service);
+        if !definition_path.exists() {
+            return Ok(None);
+        }
+
+        if let Some(description) = self.read_description(&definition_path) {
+            return Ok(Some(description));
+        }
+
+        Ok(self.lookup_package_description(&definition_path))
+    }
+
+    fn lookup_package_description(&self, definition_path: &Path) -> Option<String> {
+        let service_file = ["run", "finish", "check"]
+            .into_iter()
+            .map(|candidate| definition_path.join(candidate))
+            .find(|path| path.exists())?;
+
+        let owner_output = Command::new("xbps-query")
+            .arg("-o")
+            .arg(&service_file)
+            .output()
+            .ok()?;
+        if !owner_output.status.success() {
+            return None;
+        }
+
+        let owner_stdout = String::from_utf8(owner_output.stdout).ok()?;
+        let package_with_version = owner_stdout
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?
+            .split(':')
+            .next()?
+            .trim();
+        let package_name = strip_package_version(package_with_version);
+
+        let desc_output = Command::new("xbps-query")
+            .arg("-p")
+            .arg("short_desc")
+            .arg(package_name)
+            .output()
+            .ok()?;
+        if !desc_output.status.success() {
+            return None;
+        }
+
+        let description = String::from_utf8(desc_output.stdout).ok()?;
+        let trimmed = description.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
     pub fn validate_service_name(&self, service: &str) -> Result<()> {
         let valid = !service.is_empty()
             && service
@@ -445,4 +503,19 @@ fn decode_tai64n(stamp: &str) -> Option<(i64, u32)> {
 
     let unix_secs = secs - TAI64_UNIX_OFFSET;
     Some((unix_secs as i64, nanos))
+}
+
+fn strip_package_version(package: &str) -> &str {
+    if let Some(pos) = package.rfind('-') {
+        if pos + 1 < package.len()
+            && package[pos + 1..]
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        {
+            return &package[..pos];
+        }
+    }
+    package
 }

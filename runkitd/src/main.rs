@@ -3,7 +3,7 @@ use runkit_core::{
     DesiredState, ServiceInfo, ServiceLogEntry, ServiceManager, ServiceRuntimeState,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::os::unix::fs as unix_fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,6 +34,8 @@ enum HelperCommand {
     Enable { service: String },
     /// Disable a service (stop auto-start).
     Disable { service: String },
+    /// Fetch service description without loading logs or status.
+    Describe { service: String },
     /// List all available services with their current status.
     List,
     /// Tail logs for a service.
@@ -205,6 +207,7 @@ impl HelperContext {
             HelperCommand::Once { service } => self.call_sv("once", &service),
             HelperCommand::Enable { service } => self.enable(&service),
             HelperCommand::Disable { service } => self.disable(&service),
+            HelperCommand::Describe { service } => self.describe(&service),
             HelperCommand::List => self.list(),
             HelperCommand::Logs { service, lines } => self.logs(&service, lines),
         }
@@ -297,6 +300,15 @@ impl HelperContext {
             entries.into_iter().map(LogEntrySnapshot::from).collect();
         let data =
             serde_json::to_value(snapshots).map_err(|err| HelperError::Other(err.to_string()))?;
+        Ok(CommandOutcome::with(None, Some(data)))
+    }
+
+    fn describe(&self, service: &str) -> Result<CommandOutcome, HelperError> {
+        let description = self.manager.service_description(service)?;
+        let data = json!({
+            "service": service,
+            "description": description,
+        });
         Ok(CommandOutcome::with(None, Some(data)))
     }
 }
